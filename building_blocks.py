@@ -356,7 +356,7 @@ class ASAP_Conv_Block(nn.Module): # for ASAP in ConvNet
         self.conv = Conv2d_FA_ASAP(in_channels, out_channels, kernel_size, stride, padding, wt = wt)
         self.bn = nn.BatchNorm2d(out_channels)
         
-        self.max = nn.MaxPool2d(1,1, ceil_mode = True)
+        self.max = nn.MaxPool2d(2,2, ceil_mode = True)
         
     def forward(self, x, save):
         x = self.conv(x, save)
@@ -369,7 +369,7 @@ class ASAP_Reverse_Block(nn.Module): # for ASAP in ConvNet
         self.conv = Conv2d_FA_ASAP(in_channels, out_channels, kernel_size, stride, padding, wt = wt)
         self.bn = nn.BatchNorm2d(out_channels)
         
-        self.max = nn.MaxPool2d(1,1, ceil_mode = True)
+        self.max = nn.MaxPool2d(2,2, ceil_mode = True)
         
     def forward(self, x, save):
         x = self.conv(x, save)
@@ -443,6 +443,7 @@ class Conv2d_FA_ASAP0(nn.Conv2d):
 class ASAP_Conv_Block0(nn.Module): # for ASAP in ConvNet
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding, wt = False):
         super(ASAP_Conv_Block0, self).__init__()
+       
         
         self.conv = Conv2d_FA_ASAP0(in_channels, out_channels, kernel_size, stride, padding, wt = wt)
         self.bn = nn.BatchNorm2d(out_channels)
