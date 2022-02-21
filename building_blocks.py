@@ -306,11 +306,13 @@ class conv2d_fa_asap(torch.autograd.Function):
         input, weight, weight_fa, bias, shared = ctx.saved_tensors
         if shared == None:
             return None, None, None, None, None, None, None, None, None
+        else:
+            print(str(shared.size(1)) + ':' + str(torch.norm(shared)))
+        
         stride = ctx.stride
         padding = ctx.padding
         groups = ctx.groups
         wt = ctx.wt
-        
         shared_channel_ratio = ctx.shared_channel_ratio
         shared_filter_ratio = ctx.shared_filter_ratio
         grad_input = grad_weight = grad_bias  = None
@@ -355,8 +357,7 @@ class ASAP_Conv_Block(nn.Module): # for ASAP in ConvNet
         
         self.conv = Conv2d_FA_ASAP(in_channels, out_channels, kernel_size, stride, padding, wt = wt)
         self.bn = nn.BatchNorm2d(out_channels)
-        
-        self.max = nn.MaxPool2d(2,2, ceil_mode = True)
+        self.max = nn.MaxPool2d(1,1, ceil_mode = True)
         
     def forward(self, x, save):
         x = self.conv(x, save)
@@ -369,7 +370,7 @@ class ASAP_Reverse_Block(nn.Module): # for ASAP in ConvNet
         self.conv = Conv2d_FA_ASAP(in_channels, out_channels, kernel_size, stride, padding, wt = wt)
         self.bn = nn.BatchNorm2d(out_channels)
         
-        self.max = nn.MaxPool2d(2,2, ceil_mode = True)
+        self.max = nn.MaxPool2d(1,1, ceil_mode = True)
         
     def forward(self, x, save):
         x = self.conv(x, save)
@@ -443,13 +444,190 @@ class Conv2d_FA_ASAP0(nn.Conv2d):
 class ASAP_Conv_Block0(nn.Module): # for ASAP in ConvNet
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding, wt = False):
         super(ASAP_Conv_Block0, self).__init__()
-       
         
         self.conv = Conv2d_FA_ASAP0(in_channels, out_channels, kernel_size, stride, padding, wt = wt)
         self.bn = nn.BatchNorm2d(out_channels)
-        self.max = nn.MaxPool2d(2,2, ceil_mode = True)
+        self.max = nn.MaxPool2d(1,1, ceil_mode = True)
         
     def forward(self, x, save):
         x = self.conv(x, save)
         x = self.max(F.relu(self.bn(x)))
         return x
+    
+#%%
+class rfeedback_receiver(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, weight_fb):
+        output = input.clone()
+        dummy = torch.Tensor(input.size()[0],weight_fb.size()[0]).zero_().to(input.device)
+        ctx.save_for_backward(weight_fb,)
+        ctx.shape = input.shape
+        return output, dummy
+    
+    @staticmethod
+    def backward(ctx, grad_output, grad_dummy):
+        weight_fb, = ctx.saved_tensors
+        input_size = ctx.shape
+        grad_weight_fb = None
+        
+        grad_input = torch.mm(grad_dummy.view(grad_dummy.size()[0],-1), weight_fb).view(input_size) # Batch_size, input
+        return grad_input, grad_weight_fb
+
+
+class RFeedback_Receiver(nn.Module):
+    def __init__(self, connect_features):
+        super(RFeedback_Receiver, self).__init__()
+        self.connect_features = connect_features
+        self.weight_fb = None
+    
+    def forward(self, input):
+        if self.weight_fb is None:
+            self.weight_fb = nn.Parameter(torch.Tensor(self.connect_features, *input.size()[1:]).view(self.connect_features, -1)).to(input.device)
+            nn.init.normal_(self.weight_fb, std = math.sqrt(1./self.connect_features))
+        return rfeedback_receiver.apply(input, self.weight_fb)
+   
+class rtop_gradient(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, *dummies):
+        output = input.clone()
+        ctx.save_for_backward(output ,*dummies)
+        return output
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        output, *dummies = ctx.saved_tensors
+        grad_input = grad_output.clone()
+        grad_dummies = [grad_output.clone() for dummy in dummies]
+        return tuple([grad_input, *grad_dummies])
+    
+class conv2d_fa_asap0(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, shared, weight, weight_fa, bias, stride=1, padding=0, groups=1, wt = False):
+        
+        dum = torch.zeros_like(input).to(input.device)
+        output = cudnn_convolution.convolution(input, weight, bias, stride, padding, (1, 1), groups, False, False)
+        shared = shared.detach().clone()
+        shared_channel_ratio = int(input.size(1)/shared.size(1)) #for matching shared activation with actual activation
+        shared_filter_ratio = int(shared.size(2)/input.size(2)) #for matching shared activation with actual activation
+        
+        ctx.stride = stride
+        ctx.padding = padding
+        ctx.groups = groups
+        ctx.shared_channel_ratio = shared_channel_ratio 
+        ctx.shared_filter_ratio = shared_filter_ratio
+        ctx.wt = wt
+        ctx.save_for_backward(input, weight, weight_fa, bias, shared)
+        
+        return output, dum
+    
+    @staticmethod
+    def backward(ctx, grad_output, grad_dum):
+        input, weight, weight_fa, bias, shared = ctx.saved_tensors
+        stride = ctx.stride
+        padding = ctx.padding
+        groups = ctx.groups
+        wt = ctx.wt
+        
+        shared_channel_ratio = ctx.shared_channel_ratio
+        shared_filter_ratio = ctx.shared_filter_ratio
+        grad_input = grad_weight = grad_bias  = None
+        
+        # Matching shared activation with actual activation by concatenation and maxpool.
+        shared = torch.cat([shared] * shared_channel_ratio, 1)
+        shared = F.max_pool2d(shared, shared_filter_ratio)       
+        
+        if wt:
+            # by using shared in grad_weight, activation sharing is done.
+            # by using weight in grad_input, there is weight transport. 
+            grad_weight = cudnn_convolution.convolution_backward_weight(shared, weight.shape, grad_output, stride, padding, (1, 1), groups, False, False)
+            grad_weight_fa = None
+            grad_input = cudnn_convolution.convolution_backward_input(shared.shape, weight, grad_output, stride, padding, (1, 1), groups, False, False)
+        else:
+            # by using shared in grad_weight, activation sharing is done.
+            # by using weight in grad_input, there is no weight transport. 
+            # we traind weight_fa by grad_weight_fa = grad_weight
+            grad_weight = cudnn_convolution.convolution_backward_weight(grad_dum, weight.shape, grad_output, stride, padding, (1, 1), groups, False, False)
+            grad_weight_fa = grad_weight
+            grad_input = cudnn_convolution.convolution_backward_input(grad_dum.shape, weight_fa, grad_output, stride, padding, (1, 1), groups, False, False)
+            
+        if bias is not None:
+            grad_bias = grad_output.sum(dim=[0,2,3])
+        
+        return grad_input, None, grad_weight, grad_weight_fa, grad_bias, None, None, None, None
+class Conv2d_FA_ASAP0(nn.Conv2d):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, groups=1, bias=True, wt = False):
+        super(Conv2d_FA_ASAP0, self).__init__(in_channels, out_channels, kernel_size, stride=stride, padding=padding, groups=groups)
+        self.weight_fa = nn.Parameter(torch.Tensor(self.weight.size()), requires_grad=True)
+        self.wt = wt # by using wt, Activation Saring with weight transport is possible.
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.weight_fa, a=math.sqrt(5))      
+        
+    def forward(self, input, shared):
+        return conv2d_fa_asap0.apply(input, shared, self.weight, self.weight_fa, self.bias, self.stride, self.padding, self.groups, self.wt) 
+
+class ASAP_Conv_Block0(nn.Module): # for ASAP in ConvNet
+    def __init__(self, in_channels, out_channels, kernel_size, stride, padding, wt = False):
+        super(ASAP_Conv_Block0, self).__init__()
+        
+        self.conv = Conv2d_FA_ASAP0(in_channels, out_channels, kernel_size, stride, padding, wt = wt)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.max = nn.MaxPool2d(1,1, ceil_mode = True)
+        
+    def forward(self, x, save):
+        x = self.conv(x, save)
+        x = self.max(F.relu(self.bn(x)))
+        return x
+class conv2d_fa_reverse(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, weight, weight_fa, bias, stride=1, padding=0, groups=1, wt = False):
+        
+        dum = torch.zeros_like(input).to(input.device)
+        output = cudnn_convolution.convolution(input, weight, bias, stride, padding, (1, 1), groups, False, False)
+        #shared = shared.detach().clone()
+        dum_channel_ratio = int(input.size(1)/dum.size(1)) #for matching shared activation with actual activation
+        dum_filter_ratio = int(dum.size(2)/input.size(2)) #for matching shared activation with actual activation
+        
+        ctx.stride = stride
+        ctx.padding = padding
+        ctx.groups = groups
+        ctx.dum_channel_ratio = dum_channel_ratio 
+        ctx.dum_filter_ratio = dum_filter_ratio
+        ctx.wt = wt
+        ctx.save_for_backward(input, weight, weight_fa, bias, dum)
+        
+        return output, dum
+    
+    @staticmethod
+    def backward(ctx, grad_output, grad_dum):
+        input, weight, weight_fa, bias, dum = ctx.saved_tensors
+        stride = ctx.stride
+        padding = ctx.padding
+        groups = ctx.groups
+        wt = ctx.wt
+        
+        dum_channel_ratio = ctx.dum_channel_ratio
+        dum_filter_ratio = ctx.dum_filter_ratio
+        grad_input = grad_weight = grad_bias  = None
+        
+        # Matching shared activation with actual activation by concatenation and maxpool.
+        dum = torch.cat([dum] * dum_channel_ratio, 1)
+        dum = F.max_pool2d(dum, dum_filter_ratio)       
+        
+        if wt:
+            # by using shared in grad_weight, activation sharing is done.
+            # by using weight in grad_input, there is weight transport. 
+            grad_weight = cudnn_convolution.convolution_backward_weight(grad_dum, weight.shape, grad_output, stride, padding, (1, 1), groups, False, False)
+            grad_weight_fa = None
+            grad_input = cudnn_convolution.convolution_backward_input(grad_dum.shape, weight, grad_output, stride, padding, (1, 1), groups, False, False)
+        else:
+            # by using shared in grad_weight, activation sharing is done.
+            # by using weight in grad_input, there is no weight transport. 
+            # we traind weight_fa by grad_weight_fa = grad_weight
+            grad_weight = cudnn_convolution.convolution_backward_weight(grad_dum, weight.shape, grad_output, stride, padding, (1, 1), groups, False, False)
+            grad_weight_fa = grad_weight
+            grad_input = cudnn_convolution.convolution_backward_input(grad_dum.shape, weight_fa, grad_output, stride, padding, (1, 1), groups, False, False)
+            
+        if bias is not None:
+            grad_bias = grad_output.sum(dim=[0,2,3])
+        
+        return grad_input, grad_weight, grad_weight_fa, grad_bias, None, None, None, None
