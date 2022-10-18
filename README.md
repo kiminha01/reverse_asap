@@ -15,7 +15,7 @@ For example one could train the model by using original ASAP algorithm by
 python train.py --dataset cifar10 --model convnet --feedback asap0
 ```
 
-# Example Result
+# Example Result Obtained from CIFAR 10 
 <p align="center"><img src="./result.jpg"  width="750" height="380">
 
 # License
