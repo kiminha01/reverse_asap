@@ -1,6 +1,6 @@
 # Reverse-ASAP (RASAP)
 
-<p align="center"><img src="./ASAP_RASAP_diagram.jpg"  width="750" height="380">
+<p align="center"><img src="./ASAP_RASAP_diagram.jpg"  width="350" height="190">
   
 Image provided by courtesy of the author of [Activation Sharing Based on Asymmetric Paths (ASAP)](https://proceedings.neurips.cc/paper/2021/hash/f80ebff16ccaa9b48a0224d7c489cef4-Abstract.html)
 
