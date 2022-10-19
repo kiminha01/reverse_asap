@@ -9,7 +9,7 @@ Reverse-ASAP is an algorithm based on [Activation Sharing Based on Asymmetric Pa
 # How to Run
 The detailed instructions on how to install the packages can be found [here](https://github.com/WooSunghyeon/Activation-Sharing-with-Asymmetric-Paths).
 
-Experiments were done by using CIFAR-10 images and the model chosen during the experiment was Alexnet (Convent). One should use the flag --convnet for the model while using the flag --asap0 or --reverse to obtain the results to compare two algorithms
+Experiments were done by using CIFAR-10 images and the model chosen during the experiment was Alexnet (Convent). One should use the flag --convnet for the model while using the flag --asap0 or --reverse to obtain the results to compare two algorithms.
 For example one could train the model by using original ASAP algorithm by
 ```sh
 python train.py --dataset cifar10 --model convnet --feedback asap0
